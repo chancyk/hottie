@@ -1,3 +1,4 @@
+import std/sugar, std/sequtils
 import common, strutils, winim
 
 proc getThreadIds*(pid: int): seq[int] =
@@ -12,13 +13,31 @@ proc getThreadIds*(pid: int): seq[int] =
       valid = Thread32Next(h, te.addr)
     CloseHandle(h)
 
+
+proc getBaseAddress*(pid: int, modName: string): uint =
+  var h = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE or TH32CS_SNAPMODULE32, DWORD(pid))
+  if h != INVALID_HANDLE_VALUE:
+    var modEntry: MODULEENTRY32
+    modEntry.dwSize = DWORD(sizeof(modEntry))
+    var valid = Module32First(h, modEntry.addr)
+    while valid == 1:
+      echo modName
+      let modEntryName = filter(modEntry.szModule, x => x > 0).map(x => chr(x)).join("")
+      if modEntryName == modName:
+        result = cast[uint](modEntry.modBaseAddr)
+        echo result
+      valid = Module32Next(h, modEntry.addr)
+    CloseHandle(h)
+
+
 proc sample*(
   cpuHotAddresses: var CountTable[uint64],
   cpuHotStacks: var CountTable[string],
   pid: int,
   threadIds: seq[int],
   dumpFile: DumpFile,
-  stacks: bool
+  stacks: bool,
+  baseAddress: uint
 ): bool =
   #for threadId in threadIds:
   block:
@@ -77,7 +96,12 @@ proc sample*(
 
     ResumeThread(threadHandle)
 
-    cpuHotAddresses.inc(context.Rip.uint64)
+    let address = context.Rip.uint64
+    let imageBase = 0x140000000.uint64
+    let relative = (address - baseAddress) + imageBase
+    echo address, " [", address.int.toHex(), "] [", relative.int.toHex() ,"] :: ", toBin(address.int, 64)
+
+    cpuHotAddresses.inc(relative)
 
     if stacks:
       cpuHotStacks.inc(stackTrace)
