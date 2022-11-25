@@ -96,12 +96,12 @@ proc pe_parse(filepath: string) =
     ## See for additional details: https://learn.microsoft.com/en-us/windows/win32/debug/pe-format
     var pe_file = open(filepath, fmRead)
 
-    let sig_offset = pe_file.read(60, uint32).int    # Signature offset field is at fixed position of 0x3C bytes.
-    let coff_header = sig_offset + 4                 # COFF Header immediately follows the 4 byte signature in Image files.
-    let optional_header_pos = coff_header + 20       # Last COFF field "Characteristics" is at 18 bytes with a 2 byte width.
-    let optional_header_size_pos = coff_header + 16  # Offset 16 bytes within the COFF header.
+    let sig_offset = pe_file.read(60, uint32).int      # Signature offset field is at fixed position of 0x3C bytes.
+    let coff_header = sig_offset + 4                   # COFF Header immediately follows the 4 byte signature in Image files.
+    let optional_header_pos = coff_header + 20         # Last COFF field "Characteristics" is at 18 bytes with a 2 byte width.
+    let optional_header_size_pos = coff_header + 16    # Offset 16 bytes within the COFF header.
 
-    let signature = pe_file.read(sig_offset,  array[4, char])
+    let signature = pe_file.read(sig_offset, array[4, char])
     check_signature:  ['P', 'E', '\0', '\0']
 
     let optional_header_size  = pe_file.read(optional_header_size_pos, uint16)
@@ -113,18 +113,22 @@ proc pe_parse(filepath: string) =
     var
         base_reloc_pos: int
         image_base_pos: int
+        data_dir_count_pos: int
         section_header_pos: int
         image_base: uint64
 
     if optional_header_magic == MAGIC_PE32:
-        image_base_pos = optional_header_pos + 28       # PE32 has an extra 4-byte field (BaseOfData) over PE32+
-        base_reloc_pos = optional_header_pos + 136      # Position of Base Relocation Table field in PE32
-        section_header_pos = optional_header_pos + 224  # 8 bytes after final reserved entry in Optional Header
+        image_base_pos = optional_header_pos + 28        # ImageBase : PE32 has an extra 4-byte field (BaseOfData) over PE32+
+        data_dir_count_pos  = optional_header_pos + 92   # NumberOfRvaAndSizes : Number of data entries which may be variable
+        base_reloc_pos = optional_header_pos + 136       # BaseRelocationTable : Position of Base Relocation Table field in PE32
+        section_header_pos = optional_header_pos + 224   # Reserved : 8 bytes after final reserved entry in Optional Header
         image_base = cast[uint64](pe_file.read(image_base_pos, uint32))
+
     elif optional_header_magic == MAGIC_PE32_PLUS:
-        image_base_pos = optional_header_pos + 24
-        base_reloc_pos = optional_header_pos + 152      # Position of Base Relocation Table field in PE32+
-        section_header_pos = optional_header_pos + 240  # 8 bytes after final reserved entry in Optional Header
+        image_base_pos = optional_header_pos + 24        # ImageBase : PE32 has an extra 4-byte field (BaseOfData) over PE32+
+        data_dir_count_pos  = optional_header_pos + 108  # NumberOfRvaAndSizes : Number of data entries which may be variable
+        base_reloc_pos = optional_header_pos + 152       # BaseRelocationTable : Position of Base Relocation Table field in PE32+
+        section_header_pos = optional_header_pos + 240   # Reserved : 8 bytes after final reserved entry in Optional Header
         image_base = pe_file.read(image_base_pos, uint64)
     else:
         raise newException(Exception, fmt"Optional Header magic value ({optional_header_magic}.asHex()) is not supported.")
@@ -161,6 +165,7 @@ proc pe_parse(filepath: string) =
     while table_pos < table_end:
         when defined(peprogress):
             echo "\n[Image Base Relocation]"
+
         let reloc_rva = pe_file.read(table_pos, uint32)
         let reloc_block_size = pe_file.read(table_pos + 4, uint32)
         when defined(peprogress):
@@ -169,16 +174,16 @@ proc pe_parse(filepath: string) =
 
         # Iterate over each page.
         var next_reloc_pos = table_pos + 8
-        let last_block_pos = next_reloc_pos + (reloc_block_size - 8).int  # block_size is inclusive of the rva an itself.
+        let last_block_pos = next_reloc_pos + (reloc_block_size - 8).int  # block_size is inclusive of the RVA and itself, so -8.
         while next_reloc_pos < last_block_pos:
-            let 
+            let
                 reloc_block = pe_file.read(next_reloc_pos.int, uint16)
-                reloc_block_type = reloc_block.bitsliced(12 .. 15)    # 4 bits
-                reloc_block_offset = reloc_block.bitsliced(0 ..< 12)  # 12 bits
-                
+                reloc_block_type = reloc_block.bitsliced(12 .. 15)    # upper 4 bits
+                reloc_block_offset = reloc_block.bitsliced(0 ..< 12)  # lower 12 bits
+
             if not (reloc_block_type in [IMAGE_REL_BASED_ABSOLUTE, IMAGE_REL_BASED_DIR64]):
                 raise newException(Exception, fmt"This reloc block type <{reloc_block_type}> is not currently supported.")
-    
+
             when defined(peprogress):
                 echo fmt"[{next_reloc_pos.asHex()}] Type: ", $reloc_block_type
                 echo fmt"[{next_reloc_pos.asHex()}] Offset: ", reloc_block_offset.asHex(2)
