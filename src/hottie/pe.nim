@@ -140,10 +140,17 @@ proc pe_parse(filepath: string) =
         echo fmt"[{image_size_pos.asHex()}] Image Size: {image_size}"
         echo fmt"[{section_header_pos.asHex()}] First Section Header"
 
+    let data_dir_count = pe_file.read(data_dir_count_pos, uint32)
+    if data_dir_count < 6:
+        when defined(preprogress):
+           raise newException(Exception, fmt"Base relocation is the 6th data directory, only {data_dir_count} are available.")
+        return  # TODO: May not be a hard error. Just no relocations?
+
     let base_reloc_virtual_address = pe_file.read(base_reloc_pos, uint32)
     let base_reloc_table_size = pe_file.read(base_reloc_pos + 4, uint32)
 
     when defined(peprogress):
+        echo fmt"[{data_dir_count_pos.asHex()}] DataDirectory Count: {data_dir_count}"
         echo fmt"[{base_reloc_pos.asHex()}] Reloc Table Pos: {base_reloc_virtual_address}"
         echo fmt"[{(base_reloc_pos + 4).asHex()}] Reloc Table Size: {base_reloc_table_size}"
 
