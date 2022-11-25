@@ -117,14 +117,14 @@ proc pe_parse(filepath: string) =
         image_base: uint64
 
     if optional_header_magic == MAGIC_PE32:
-        image_base_pos = optional_header_pos + 28  # PE32 has an extra 4-byte field (BaseOfData) over PE32+
-        base_reloc_pos = optional_header_pos + 136
-        section_header_pos = optional_header_pos + 224
+        image_base_pos = optional_header_pos + 28       # PE32 has an extra 4-byte field (BaseOfData) over PE32+
+        base_reloc_pos = optional_header_pos + 136      # Position of Base Relocation Table field in PE32
+        section_header_pos = optional_header_pos + 224  # 8 bytes after final reserved entry in Optional Header
         image_base = cast[uint64](pe_file.read(image_base_pos, uint32))
     elif optional_header_magic == MAGIC_PE32_PLUS:
         image_base_pos = optional_header_pos + 24
-        base_reloc_pos = optional_header_pos + 152
-        section_header_pos = optional_header_pos + 240
+        base_reloc_pos = optional_header_pos + 152      # Position of Base Relocation Table field in PE32+
+        section_header_pos = optional_header_pos + 240  # 8 bytes after final reserved entry in Optional Header
         image_base = pe_file.read(image_base_pos, uint64)
     else:
         raise newException(Exception, fmt"Optional Header magic value ({optional_header_magic}.asHex()) is not supported.")
