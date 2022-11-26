@@ -88,6 +88,15 @@ template check_optional_header_magic(body: untyped) =
         raise newException(Exception, fmt"<{optional_header_magic.asHex()} is not a valid Optional Header magic value.")
     else:
         progress_ok(label, optional_header_magic.asHex(0))
+        
+        
+template check_data_dir_count(body: untyped) =
+    let label = fmt"[{data_dir_count_pos.asHex()}] Data Directory Count"
+    if not (body):
+        progress_err(label)
+        raise newException(Exception, fmt"Base relocation is the 6th data directory, only {data_dir_count} are available.")
+    else:
+        progress_ok(label, data_dir_count)
 
 
 proc pe_parse(filepath: string) =
@@ -141,10 +150,7 @@ proc pe_parse(filepath: string) =
         echo fmt"[{section_header_pos.asHex()}] First Section Header"
 
     let data_dir_count = pe_file.read(data_dir_count_pos, uint32)
-    if data_dir_count < 6:
-        when defined(preprogress):
-           raise newException(Exception, fmt"Base relocation is the 6th data directory, only {data_dir_count} are available.")
-        return  # TODO: May not be a hard error. Just no relocations?
+    check_data_dir_count: data_dir_count >= 6
 
     let base_reloc_virtual_address = pe_file.read(base_reloc_pos, uint32)
     let base_reloc_table_size = pe_file.read(base_reloc_pos + 4, uint32)

@@ -1,4 +1,4 @@
-import std/sugar, std/sequtils
+import std/bitops, std/sugar, std/sequtils
 import common, strutils, winim
 
 proc getThreadIds*(pid: int): seq[int] =
@@ -14,7 +14,7 @@ proc getThreadIds*(pid: int): seq[int] =
     CloseHandle(h)
 
 
-proc getBaseAddress*(pid: int, modName: string): uint =
+proc getBaseAddress*(pid: int, hProcess: HANDLE, modName: string): uint =
   var h = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE or TH32CS_SNAPMODULE32, DWORD(pid))
   if h != INVALID_HANDLE_VALUE:
     var modEntry: MODULEENTRY32
@@ -24,8 +24,19 @@ proc getBaseAddress*(pid: int, modName: string): uint =
       echo modName
       let modEntryName = filter(modEntry.szModule, x => x > 0).map(x => chr(x)).join("")
       if modEntryName == modName:
+        var mod_info: MODULEINFO
+        let ok = GetModuleInformation(
+            hProcess,
+            modEntry.hModule,
+            cast[LPMODULEINFO](mod_info.unsafeAddr),
+            cast[DWORD](sizeof(mod_info))
+        )
+        if ok != 0:
+            echo repr(mod_info)
+        else:
+            echo "Failed to get module info."
+
         result = cast[uint](modEntry.modBaseAddr)
-        echo result
       valid = Module32Next(h, modEntry.addr)
     CloseHandle(h)
 
@@ -98,10 +109,10 @@ proc sample*(
 
     let address = context.Rip.uint64
     let imageBase = 0x140000000.uint64
-    let relative = (address - baseAddress) + imageBase
-    echo address, " [", address.int.toHex(), "] [", relative.int.toHex() ,"] :: ", toBin(address.int, 64)
+    let relative = address - baseAddress
+    echo address, " [", address.toHex(), "] [", relative.toHex() ,"] :: ", toBin(relative.int64, 64)
 
-    cpuHotAddresses.inc(relative)
+    cpuHotAddresses.inc(relative.uint64)
 
     if stacks:
       cpuHotStacks.inc(stackTrace)

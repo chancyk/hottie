@@ -8,3 +8,5 @@ while true:
   inc i
   for j in 0 .. 100_000_000:
     inc x
+  if i > 30:
+    break
