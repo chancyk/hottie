@@ -72,65 +72,25 @@ proc hottie(
     echo "See hottie --help for more details"
 
   for exePath in paths:
-
-    var dumpFile = getDumpFile(exePath)
-
     var
+      dumpFile = getDumpFile(exePath)
       p: Process = startProcess(exePath, options = {poParentStreams})
       pid = p.processID()
-      hProcess = OpenProcess(
-        PROCESS_ALL_ACCESS,
-        FALSE,
-        cast[DWORD](p.processID)
-      )
       threadIds = getThreadIds(pid)
+      baseAddresses = getBaseAddresses(pid)
       startTime = epochTime()
       cpuSamples: int
       cpuHotAddresses = CountTable[uint64]()
       cpuHotStacks = CountTable[string]()
+      externalHits = CountTable[string]()
 
     let
-        (_, name, ext) = splitFile(exePath)
-        dumpFileName = name & ext
-        baseAddress = getBaseAddress(pid, hProcess, dumpFileName)
+      (dir, name, ext) = exePath.splitFile()
+      exeName = name & ext
 
-    echo "File: ", exePath
-    echo "BaseAddress: ", baseAddress, " [", baseAddress.toHex(), "]"
-    # let IMAGE_DIRECTORY_ENTRY_BASERELOC = 5
-    # var 
-        # lpcbNeeded: DWORD
-        # hModuleList: array[1000, HMODULE]
-        # dataDirectory: PVOID
-        # entry_size: ULONG = 0
-        # header: ptr PIMAGE_SECTION_HEADER
-    
-    # var tries = 0
-    # var enum_result = 0
-    # while enum_result == 0 and tries < 3:
-        # enum_result = EnumProcessModules(368, cast[ptr HMODULE](hModuleList.unsafeAddr), sizeof(HMODULE) * 1000, cast[LPDWORD](lpcbNeeded.unsafeAddr))
-        # echo "Result: ", enum_result
-        # echo "Modules: ", repr(lpcbNeeded)
-        # sleep(1000)
-        # tries += 1
+    for key in baseAddresses.keys():
+      echo key, " : ", baseAddresses[key]
 
-    # if enum_result != 0:
-        # for hModule in hModuleList:
-            # echo "HMODULE: ", repr(hModule)
-            # echo repr(hModule.unsafeAddr)
-            # dataDirectory = ImageDirectoryEntryToData(
-                # Base = cast[PVOID](hModule.unsafeAddr),
-                # MappedAsImage = TRUE,
-                # DirectoryEntry = cast[USHORT](IMAGE_DIRECTORY_ENTRY_BASERELOC),
-                # Size = cast[PULONG](entry_size.unsafeAddr)
-            # )
-            # sleep(100)
-            # echo "Entry Size: ", entry_size
-            # if dataDirectory == NULL:
-                # echo "Reloc Directory not found."
-    # else:
-        # echo "Enum Processes failed"
-    
-    # CloseHandle(hModule)
     when defined(macosx):
       let (output, ret) = execCmdEx("vmmap --wide " & $pid)
       for line in output.split("\n"):
@@ -145,17 +105,21 @@ proc hottie(
           break
       except:
         break
+
       let startSample = epochTime()
       if sample(
         cpuHotAddresses,
         cpuHotStacks,
+        externalHits,
         pid,
         threadIds,
         dumpFile,
         stacks,
-        baseAddress
+        baseAddresses,
+        exeName
       ):
         break
+
       inc cpuSamples
       # Wait to approach the user supplied sampling rate.
       while startSample + 1/rate.float64 * 0.8 > epochTime():
@@ -164,8 +128,8 @@ proc hottie(
     let
       exitTime = epochTime()
       totalTime = exitTime - startTime
-    p.close()
 
+    p.close()
     echo "Program ended"
 
     let samplesPerSecond = cpuSamples.float64 / (totalTime)
@@ -181,10 +145,17 @@ proc hottie(
     else: #lines:
       dumpScan(dumpFile.nimLines, cpuHotAddresses, samplesPerSecond, cpuSamples, numLines)
 
+    echo "\nHOT"
+    echo "---"
+    for (key, count) in cpuHotAddresses.pairs():
+      echo key, " [", key.toHex() ,"]: ", count
+
+    echo "\nEXTERNAL"
+    echo "---------"
+    for (key, count) in externalHits.pairs():
+      echo key, ": ", count
+
     echo strformat.`&`"Samples per second: {samplesPerSecond:.1f} totalTime: {totalTime:.3f}ms"
-    for (address, count) in cpuHotAddresses.pairs():
-        if count > 0 and address > 0:
-            echo count, " :: ", address, " [", address.int.toHex(), "] "
 
     when defined(macosx):
       # Need for some reason on mac?

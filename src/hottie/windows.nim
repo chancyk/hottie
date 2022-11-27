@@ -1,4 +1,4 @@
-import std/bitops, std/sugar, std/sequtils
+import std/bitops, std/sugar, std/sequtils, std/algorithm
 import common, strutils, winim
 
 proc getThreadIds*(pid: int): seq[int] =
@@ -11,44 +11,41 @@ proc getThreadIds*(pid: int): seq[int] =
       if te.th32OwnerProcessID == DWORD(pid):
         result.add te.th32ThreadID
       valid = Thread32Next(h, te.addr)
+
     CloseHandle(h)
 
 
-proc getBaseAddress*(pid: int, hProcess: HANDLE, modName: string): uint =
-  var h = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE or TH32CS_SNAPMODULE32, DWORD(pid))
+proc getBaseAddresses*(pid: int): OrderedTableRef[uint64, string] =
+  result = newOrderedTable[uint64, string]()
+  var
+    addresses = newTable[uint64, string]()
+    h = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE or TH32CS_SNAPMODULE32, DWORD(pid))
   if h != INVALID_HANDLE_VALUE:
     var modEntry: MODULEENTRY32
     modEntry.dwSize = DWORD(sizeof(modEntry))
     var valid = Module32First(h, modEntry.addr)
     while valid == 1:
-      echo modName
       let modEntryName = filter(modEntry.szModule, x => x > 0).map(x => chr(x)).join("")
-      if modEntryName == modName:
-        var mod_info: MODULEINFO
-        let ok = GetModuleInformation(
-            hProcess,
-            modEntry.hModule,
-            cast[LPMODULEINFO](mod_info.unsafeAddr),
-            cast[DWORD](sizeof(mod_info))
-        )
-        if ok != 0:
-            echo repr(mod_info)
-        else:
-            echo "Failed to get module info."
-
-        result = cast[uint](modEntry.modBaseAddr)
+      let address = cast[uint64](modEntry.modBaseAddr)
+      addresses[address] = modEntryName
       valid = Module32Next(h, modEntry.addr)
+
     CloseHandle(h)
+
+  for address in sorted(addresses.keys.toSeq):
+    result[address] = addresses[address]
 
 
 proc sample*(
   cpuHotAddresses: var CountTable[uint64],
   cpuHotStacks: var CountTable[string],
+  externalHits: var CountTable[string],
   pid: int,
   threadIds: seq[int],
   dumpFile: DumpFile,
   stacks: bool,
-  baseAddress: uint
+  baseAddresses: OrderedTableRef[uint64, string],
+  exeName: string
 ): bool =
   #for threadId in threadIds:
   block:
@@ -63,11 +60,16 @@ proc sample*(
     var context: CONTEXT
     context.ContextFlags = CONTEXT_ALL
 
-    SuspendThread(threadHandle)
-    GetThreadContext(
-      threadHandle,
-      context.addr
-    )
+    let hresult = SuspendThread(threadHandle).HRESULT
+    if hresult == 0xffffffff:
+        echo "Failed to suspend."
+        return
+
+    let prev_priority = GetThreadPriority(threadHandle)
+    SetThreadPriority(threadHandle, THREAD_PRIORITY_TIME_CRITICAL)
+    GetThreadContext(threadHandle, context.addr)
+    SetThreadPriority(threadHandle, prev_priority)
+
     var stackTrace: string
     if stacks:
       var prevFun = ""
@@ -107,12 +109,26 @@ proc sample*(
 
     ResumeThread(threadHandle)
 
+    var
+      module: string
+      exeBaseAddress: uint64
     let address = context.Rip.uint64
-    let imageBase = 0x140000000.uint64
-    let relative = address - baseAddress
-    echo address, " [", address.toHex(), "] [", relative.toHex() ,"] :: ", toBin(relative.int64, 64)
+    for baseAddress in baseAddresses.keys():
+      # First time should miss, otherwise will be module == ""
+      if address < baseAddress:
+        break
 
-    cpuHotAddresses.inc(relative.uint64)
+      module = baseAddresses[baseAddress]
+      if module == exeName:
+        exeBaseAddress = baseAddress
+
+    if module == exeName:
+      echo address, " ", exeBaseAddress
+      let imageBase = 0x140000000.uint64
+      let relative = (address - exeBaseAddress) + imageBase
+      cpuHotAddresses.inc(relative)
+    else:
+      externalHits.inc(module)
 
     if stacks:
       cpuHotStacks.inc(stackTrace)
